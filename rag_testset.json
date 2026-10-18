@@ -1,0 +1,18 @@
+[
+  {
+    "question": "What is malaria?",
+    "expected": [
+      {"source": "malaria_elimination.pdf", "page": 1}
+    ]
+  },
+  {
+    "question": "What are the warning signs of severe malaria?",
+    "expected": [
+      {"source": "malaria_report.pdf", "page": 163}
+    ]
+  },
+  {
+    "question": "What is the capital of France?",
+    "expected": []
+  }
+]
