@@ -1,4 +1,4 @@
-# HealthGuard AI
+# HealthGuard AI Agent
 
 An agentic healthcare information assistant that answers questions using local PDF references and trusted health websites. It is intended for educational use only and is not a substitute for professional medical advice, diagnosis, or treatment.
 
