@@ -14,7 +14,12 @@ st.set_page_config(
 )
 
 from config import KNOWLEDGE_BASE_DIR, LANGFUSE_AVAILABLE, LANGFUSE_ENABLED, langfuse_client
-from retrieval import create_retriever, ingest_pdfs_into_vectordb, create_vectorstore
+from retrieval import (
+    create_retriever,
+    ingest_pdfs_into_vectordb,
+    create_vectorstore,
+    _discover_pdfs,
+)
 from graph import build_graph, run_graph_turn
 
 
@@ -30,13 +35,17 @@ def main():
         st.subheader("📚 Medical knowledge base")
 
         if os.path.isdir(KNOWLEDGE_BASE_DIR):
-            pdf_files = sorted(
-                name for name in os.listdir(KNOWLEDGE_BASE_DIR)
-                if name.lower().endswith(".pdf")
-            )
-            st.info(f"Found {len(pdf_files)} PDF(s)")
-            for pdf in pdf_files:
-                st.caption(f"📄 {pdf}")
+            # Walk the disease sub-folders (knowledge-base/<disease>/*.pdf), the
+            # same way ingestion does, so the count here matches what gets indexed.
+            pdf_entries = _discover_pdfs(KNOWLEDGE_BASE_DIR)
+            st.info(f"Found {len(pdf_entries)} PDF(s)")
+        #     by_disease = {}
+        #     for _path, name, disease in pdf_entries:
+        #         by_disease.setdefault(disease, []).append(name)
+        #     for disease in sorted(by_disease):
+        #         st.caption(f"**{disease}**")
+        #         for name in sorted(by_disease[disease]):
+        #             st.caption(f"📄 {name}")
         else:
             st.warning(f"Directory '{KNOWLEDGE_BASE_DIR}' not found.")
 
@@ -130,6 +139,7 @@ def main():
                         # Reset every turn: MemorySaver would otherwise carry the
                         # previous turn's resolved question into this one.
                         "standalone_question": "",
+                        "disease": "",
                         "intent": "",
                         "symptoms": [],
                         "duration": "unknown",
@@ -162,6 +172,7 @@ def main():
                     metadata = {
                         "intent": result.get("intent", "unknown"),
                         "resolved_question": result.get("standalone_question", ""),
+                        "detected_disease": result.get("disease", "") or "none",
                         "final_node": result.get("sender", "unknown"),
                         "confidence": result.get("confidence", "unknown"),
                         "evidence_status": result.get("evidence_status", "unknown"),

@@ -26,6 +26,8 @@ from config import (
     KNOWLEDGE_BASE_DIR,
     PERSIST_DIRECTORY,
     RETRIEVAL_K,
+    DISEASE_FOLDERS,
+    NON_DISEASE_CATEGORIES,
     get_embeddings,
     invoke_llm,
     observe,
@@ -36,31 +38,69 @@ from config import (
 # PHASE 2 - DOCUMENT INGESTION
 # ============================================================
 
+def _discover_pdfs(base_dir: str) -> List[tuple]:
+    """
+    Find every PDF under base_dir and infer its disease from the sub-folder it
+    sits in: knowledge-base/malaria/x.pdf -> disease "malaria".
+
+    Returns a list of (file_path, file_name, disease) tuples. A PDF placed
+    directly in base_dir (no disease sub-folder) is tagged "unspecified" so it
+    is still searchable but never matches a disease filter. A sub-folder whose
+    name isn't a known disease or category is still ingested under its own name,
+    so adding a new disease folder works without a code change — the folder name
+    just won't be a filter target until it's added to KNOWN_DISEASES.
+    """
+    found: List[tuple] = []
+
+    # PDFs directly in the base dir (back-compat with the old flat layout).
+    for name in sorted(os.listdir(base_dir)):
+        full = os.path.join(base_dir, name)
+        if os.path.isfile(full) and name.lower().endswith(".pdf"):
+            found.append((full, name, "unspecified"))
+
+    # PDFs inside disease sub-folders.
+    for entry in sorted(os.listdir(base_dir)):
+        sub = os.path.join(base_dir, entry)
+        if not os.path.isdir(sub):
+            continue
+        disease = entry.lower()
+        for name in sorted(os.listdir(sub)):
+            full = os.path.join(sub, name)
+            if os.path.isfile(full) and name.lower().endswith(".pdf"):
+                found.append((full, name, disease))
+
+    return found
+
+
 @st.cache_resource
 def ingest_pdfs_into_vectordb():
     """
     Load PDFs, split them into chunks, and upsert chunks into Chroma.
     Stable IDs help avoid adding duplicate chunks when re-ingesting.
-    Each chunk keeps its PDF name and page number as metadata.
+    Each chunk keeps its PDF name, page number, and disease (from its
+    sub-folder) as metadata.
     """
     if not os.path.isdir(KNOWLEDGE_BASE_DIR):
         return 0
 
-    pdf_files = sorted(
-        name for name in os.listdir(KNOWLEDGE_BASE_DIR)
-        if name.lower().endswith(".pdf")
-    )
-    if not pdf_files:
+    pdf_entries = _discover_pdfs(KNOWLEDGE_BASE_DIR)
+    if not pdf_entries:
         return 0
 
     documents = []
-    for file_name in pdf_files:
-        file_path = os.path.join(KNOWLEDGE_BASE_DIR, file_name)
+    for file_path, file_name, disease in pdf_entries:
         try:
             loaded = PyPDFLoader(file_path).load()
             for doc in loaded:
                 doc.metadata["source"] = file_name
                 doc.metadata["document_type"] = "local_pdf"
+                # The sub-folder name is the disease tag. The same PDF duplicated
+                # into several disease folders is ingested once per folder with a
+                # different disease tag and a distinct id (id includes source +
+                # page + start_index + content, not the disease, so two folders
+                # holding an identical file would collide on id — include disease
+                # in the id below to keep both copies).
+                doc.metadata["disease"] = disease
             documents.extend(loaded)
         except Exception as exc:
             st.warning(f"Could not load {file_name}: {exc}")
@@ -78,6 +118,7 @@ def ingest_pdfs_into_vectordb():
     ids = []
     for chunk in chunks:
         identity = "|".join([
+            str(chunk.metadata.get("disease", "")),  # keeps per-disease copies of a duplicated PDF distinct
             str(chunk.metadata.get("source", "")),
             str(chunk.metadata.get("page", "")),
             str(chunk.metadata.get("start_index", "")),
@@ -173,17 +214,31 @@ def _cosine(a: List[float], b: List[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def retrieve_candidates(query: str, fetch_k: int = RETRIEVAL_FETCH_K) -> List[dict]:
+def retrieve_candidates(
+    query: str,
+    fetch_k: int = RETRIEVAL_FETCH_K,
+    disease: str = None,
+) -> List[dict]:
     """
     Fetch candidate chunks and score each with exact cosine similarity.
     Returns dicts {doc, score, embedding}, sorted by score (highest first).
-    Metadata (PDF filename, page, start_index, ...) is carried on doc.metadata.
+    Metadata (PDF filename, page, start_index, disease, ...) is on doc.metadata.
+
+    When `disease` is given, retrieval is restricted to that disease plus the
+    shared "general" documents, using Chroma's metadata filter so cross-disease
+    chunks never enter the candidate pool. `disease=None` searches everything.
     """
     vectorstore = create_vectorstore()
     if vectorstore is None:
         return []
 
-    docs = vectorstore.similarity_search(query, k=fetch_k)
+    search_kwargs = {"k": fetch_k}
+    if disease:
+        # Chroma $in filter: keep the named disease AND shared "general" docs.
+        allowed = [disease] + sorted(NON_DISEASE_CATEGORIES)
+        search_kwargs["filter"] = {"disease": {"$in": allowed}}
+
+    docs = vectorstore.similarity_search(query, **search_kwargs)
     if not docs:
         return []
 
@@ -305,11 +360,27 @@ def run_retrieval_pipeline(
     threshold: float = None,
     use_coverage_check: bool = True,
     top_k: int = RETRIEVAL_K,
+    disease: str = None,
 ) -> tuple:
-    """Full retrieval pipeline. Returns (documents, sources, diagnostics). Reused by rag_eval.py."""
+    """
+    Full retrieval pipeline. Returns (documents, sources, diagnostics).
+    Reused by rag_eval.py.
+
+    When `disease` is given, candidates are first restricted to that disease
+    (plus shared "general" docs). If that filtered search returns nothing, the
+    pipeline falls back to an unfiltered search so a mis-tagged or sparsely
+    covered disease still yields an answer rather than a dead end.
+    """
     threshold = RELEVANCE_THRESHOLD if threshold is None else threshold
 
-    candidates = retrieve_candidates(query)
+    disease_filter_applied = bool(disease)
+    disease_filter_fellback = False
+    candidates = retrieve_candidates(query, disease=disease)
+    if disease and not candidates:
+        # Nothing under this disease (+ general) — don't dead-end; search all.
+        disease_filter_fellback = True
+        candidates = retrieve_candidates(query, disease=None)
+
     fetched = len(candidates)
     candidates, duplicates_removed = deduplicate_candidates(candidates)
     candidates, below_threshold = apply_relevance_threshold(candidates, threshold)
@@ -338,6 +409,7 @@ def run_retrieval_pipeline(
             "title": str(doc.metadata.get("source", "Local PDF")),
             "source": str(doc.metadata.get("source", "Local PDF")),
             "page": doc.metadata.get("page"),
+            "disease": doc.metadata.get("disease"),
             "score": candidate["score"],
         })
 
@@ -345,6 +417,8 @@ def run_retrieval_pipeline(
         "query": query,
         "score_type": "cosine_similarity",
         "relevance_threshold": threshold,
+        "disease_filter": disease if disease_filter_applied else None,
+        "disease_filter_fellback": disease_filter_fellback,
         "candidates_fetched": fetched,
         "duplicates_removed": duplicates_removed,
         "below_threshold_removed": below_threshold,

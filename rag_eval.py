@@ -27,7 +27,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import config
-import retrieval  # reuses the exact production pipeline
+import retrieval
 
 K = config.RETRIEVAL_K
 SWEEP = [0.0, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50]

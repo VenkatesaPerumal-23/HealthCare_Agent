@@ -17,7 +17,7 @@ from langchain_community.document_loaders import WebBaseLoader
 from langgraph.graph import START, END, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 
-from config import LANGFUSE_ENABLED, VALID_INTENTS, invoke_llm, observe, langfuse_client
+from config import LANGFUSE_ENABLED, VALID_INTENTS, KNOWN_DISEASES, invoke_llm, observe, langfuse_client
 from retrieval import run_retrieval_pipeline
 
 
@@ -28,6 +28,7 @@ from retrieval import run_retrieval_pipeline
 class GraphState(TypedDict, total=False): #total=False means that all keys are optional
     question: str
     standalone_question: str
+    disease: str
     intent: str
     symptoms: List[str]
     duration: str
@@ -126,6 +127,26 @@ LATEST QUESTION:
     return rewritten
 
 
+# Word-boundary matchers for each known disease, built once. A deterministic
+# keyword match is cheaper and more predictable than an LLM call for a small
+# fixed vocabulary, and it never hallucinates a disease that wasn't named.
+_DISEASE_PATTERNS = {
+    disease: re.compile(rf"\b{re.escape(disease)}\b", re.IGNORECASE)
+    for disease in KNOWN_DISEASES
+}
+
+
+def extract_disease(text: str) -> str:
+    """
+    Return the single known disease named in `text`, or "" when none or more
+    than one is named. Returning "" on the ambiguous (multi-disease) case is
+    deliberate: a hard metadata filter should only narrow retrieval when the
+    target is unambiguous, otherwise we'd arbitrarily drop one of them.
+    """
+    hits = [disease for disease, pattern in _DISEASE_PATTERNS.items() if pattern.search(text)]
+    return hits[0] if len(hits) == 1 else ""
+
+
 @observe(name="supervisor_node")
 def supervisor_node(state: GraphState) -> GraphState:
     question = state["question"]
@@ -137,6 +158,7 @@ def supervisor_node(state: GraphState) -> GraphState:
         return {
             "intent": "conversation_context",
             "standalone_question": question,
+            "disease": "",
             "sender": "supervisor_node",
         }
 
@@ -149,6 +171,7 @@ def supervisor_node(state: GraphState) -> GraphState:
             return {
                 "intent": "clarification",
                 "standalone_question": "",
+                "disease": "",
                 "sender": "supervisor_node",
             }
 
@@ -184,9 +207,13 @@ User question: {standalone_question}
         decision,
     )
     intent = match.group(1) if match else "general_health"
+    # Extract the disease from the RESOLVED question, so a follow-up like
+    # "how can it be prevented?" that resolved to "...dengue..." is filterable.
+    disease = extract_disease(standalone_question)
     return {
         "intent": intent,
         "standalone_question": standalone_question,
+        "disease": disease,
         "sender": "supervisor_node",
     }
 
@@ -403,8 +430,9 @@ def retrieve_node(state: GraphState) -> GraphState:
     # Search with the resolved question; "How can it be prevented?" alone
     # would match an arbitrary disease in the vector store.
     query = state.get("standalone_question") or state["question"]
+    disease = state.get("disease") or None
     try:
-        documents, sources, diagnostics = run_retrieval_pipeline(query)
+        documents, sources, diagnostics = run_retrieval_pipeline(query, disease=disease)
     except Exception as exc:
         documents, sources = [], []
         diagnostics = {"error": f"Retrieval failed: {type(exc).__name__}"}

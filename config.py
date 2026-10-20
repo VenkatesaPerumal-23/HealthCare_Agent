@@ -54,6 +54,22 @@ VALID_INTENTS = {
     "clarification",
 }
 
+# Diseases covered by the knowledge base. Each is also a sub-folder name under
+# KNOWLEDGE_BASE_DIR (knowledge-base/malaria/, knowledge-base/dengue/, ...), so
+# the folder a PDF sits in becomes its "disease" metadata tag at ingestion time.
+# "general" holds documents spanning several diseases (e.g. the arboviral guide).
+# This set is the single source of truth: ingestion, the supervisor's disease
+# extraction, and retrieval filtering all read from it.
+KNOWN_DISEASES = {
+    "malaria",
+    "dengue",
+    "chikungunya",
+    "zika",
+}
+# Folders that may exist under KNOWLEDGE_BASE_DIR but are not a single disease.
+NON_DISEASE_CATEGORIES = {"general"}
+DISEASE_FOLDERS = KNOWN_DISEASES | NON_DISEASE_CATEGORIES
+
 
 # ============================================================
 # SHARED MODEL / EMBEDDINGS
