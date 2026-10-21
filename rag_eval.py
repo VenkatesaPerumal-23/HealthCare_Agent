@@ -16,7 +16,16 @@ Test-set format (pages are 1-based, as printed in the PDF viewer; page is option
 [
   {"question": "How is dengue transmitted?",
    "expected": [{"source": "dengue_guidelines.pdf", "page": 4}]},
-  {"question": "What is the capital of France?", "expected": []}   <- negative: should return nothing
+  {"question": "What is the capital of France?", "expected": []},   <- negative: should return nothing
+
+  # Optional "disease" field: when present on a positive question, `evaluate`
+  # ALSO runs that question through retrieval's disease filter (the same
+  # disease=... argument retrieve_node passes in production) and prints a
+  # separate "Disease filter impact" table comparing filtered vs. unfiltered
+  # retrieval for Recall@K, Precision@K, and cross-disease chunk leakage.
+  # Use one of config.KNOWN_DISEASES (malaria, dengue, chikungunya, zika).
+  {"question": "What are the warning signs of severe dengue?",
+   "expected": [{"source": "dengue_guidelines.pdf"}], "disease": "dengue"}
 ]
 """
 import argparse
@@ -44,6 +53,21 @@ def is_relevant(source: dict, expected: list) -> bool:
         if page is not None and int(page) + 1 == int(item["page"]):
             return True
     return False
+
+
+def count_cross_disease_leakage(sources: list, disease: str, k: int) -> int:
+    """
+    Count top-K sources tagged with a DIFFERENT disease than the one this
+    question is about. "general" and untagged sources are never leakage —
+    they're the shared/legacy documents retrieval is meant to let through
+    regardless of which disease filter is active.
+    """
+    leaked = 0
+    for source in sources[:k]:
+        tag = source.get("disease")
+        if tag and tag not in {disease, "general", "unspecified"}:
+            leaked += 1
+    return leaked
 
 
 def score_query(sources: list, expected: list, k: int) -> dict:
@@ -125,17 +149,115 @@ def cmd_evaluate(args):
     print("lower precision, because the coverage check and validator filter noise later.")
     print("Set it in .env:  RAG_RELEVANCE_THRESHOLD=<value>")
 
+    # Single-threshold comparison of retrieve_node's actual disease filter,
+    # only for questions tagged with a "disease" (see module docstring).
+    impact_threshold = args.disease_threshold if args.disease_threshold is not None else retrieval.RELEVANCE_THRESHOLD
+    report_disease_filter_impact(testset, impact_threshold, args.with_coverage, K)
+
+
+def report_disease_filter_impact(testset: list, threshold: float, with_coverage: bool, k: int):
+    """
+    For every positive question tagged with a "disease", run retrieval BOTH
+    unfiltered and filtered (disease=...), and compare: does the filter
+    improve Recall@K / Precision@K, and does it actually stop cross-disease
+    chunks from showing up? This is the direct evidence that retrieve_node's
+    disease filter (added for the vector-borne-disease expansion) earns its
+    keep, rather than just assuming a metadata filter helps.
+    """
+    tagged = [t for t in testset if t.get("expected") and t.get("disease")]
+    if not tagged:
+        print("\n(No test-set questions have a \"disease\" field — skipping the "
+              "disease-filter-impact report. Add one to see filtered-vs-unfiltered results.)")
+        return
+
+    print(f"\nDisease filter impact (threshold={threshold:.2f}, "
+          f"coverage={'on' if with_coverage else 'off'}, K={k})")
+    print("-" * 96)
+    header = (f"{'disease':>12} | {'n':>2} | {'recall':>7} {'→':>1} {'recall':>7} | "
+              f"{'precision':>9} {'→':>1} {'precision':>9} | "
+              f"{'leak/q':>7} {'→':>1} {'leak/q':>7} | {'fallback':>9}")
+    print(header + "\n" + " " * 16 + "(no filter → filtered)" + " " * 6 +
+          "(no filter → filtered)" + "    (no filter → filtered)")
+    print("-" * 96)
+
+    by_disease: dict = {}
+    for item in tagged:
+        disease = item["disease"]
+        unfiltered_docs, unfiltered_sources, _ = retrieval.run_retrieval_pipeline(
+            item["question"], threshold=threshold, use_coverage_check=with_coverage,
+            top_k=k, disease=None,
+        )
+        filtered_docs, filtered_sources, filtered_diag = retrieval.run_retrieval_pipeline(
+            item["question"], threshold=threshold, use_coverage_check=with_coverage,
+            top_k=k, disease=disease,
+        )
+        row = {
+            "unfiltered": score_query(unfiltered_sources, item["expected"], k),
+            "filtered": score_query(filtered_sources, item["expected"], k),
+            "leak_unfiltered": count_cross_disease_leakage(unfiltered_sources, disease, k),
+            "leak_filtered": count_cross_disease_leakage(filtered_sources, disease, k),
+            "fellback": filtered_diag.get("disease_filter_fellback", False),
+        }
+        by_disease.setdefault(disease, []).append(row) ##############
+
+    def avg(rows, path):
+        keys = path.split(".")
+        vals = []
+        for r in rows:
+            v = r
+            for key in keys:
+                v = v[key]
+            vals.append(v)
+        return statistics.mean(vals) if vals else 0.0
+
+    all_rows = []
+    for disease in sorted(by_disease):
+        rows = by_disease[disease]
+        all_rows.extend(rows)
+        fellback_count = sum(1 for r in rows if r["fellback"])
+        print(f"{disease:>12} | {len(rows):>2} | "
+              f"{avg(rows,'unfiltered.recall'):>7.2f} → {avg(rows,'filtered.recall'):>7.2f} | "
+              f"{avg(rows,'unfiltered.precision'):>9.2f} → {avg(rows,'filtered.precision'):>9.2f} | "
+              f"{avg(rows,'leak_unfiltered'):>7.1f} → {avg(rows,'leak_filtered'):>7.1f} | "
+              f"{fellback_count}/{len(rows):>7}")
+
+    fellback_total = sum(1 for r in all_rows if r["fellback"])
+    print("-" * 96)
+    print(f"{'TOTAL':>12} | {len(all_rows):>2} | "
+          f"{avg(all_rows,'unfiltered.recall'):>7.2f} → {avg(all_rows,'filtered.recall'):>7.2f} | "
+          f"{avg(all_rows,'unfiltered.precision'):>9.2f} → {avg(all_rows,'filtered.precision'):>9.2f} | "
+          f"{avg(all_rows,'leak_unfiltered'):>7.1f} → {avg(all_rows,'leak_filtered'):>7.1f} | "
+          f"{fellback_total}/{len(all_rows):>7}")
+
+    print("\nRead this as: recall should not drop filtered vs. unfiltered (the filter should")
+    print("never hide the right answer), while leak/q should drop toward 0 (the filter should")
+    print("stop other diseases' chunks from entering the evidence). \"fallback\" counts how many")
+    print("questions found nothing under their own disease + general and fell back to an")
+    print("unfiltered search — a high fallback count usually means that disease's folder is")
+    print("thin or mis-tagged, not that the filter logic is wrong.")
+
+
 def cmd_template(args):
     template = [
+
         {"question": "How is dengue transmitted?",
-         "expected": [{"source": "REPLACE_WITH_YOUR.pdf", "page": 1}]},
-        {"question": "What are the warning signs of severe dengue?",
-         "expected": [{"source": "REPLACE_WITH_YOUR.pdf"}]},
+         "expected": [{"source": "REPLACE_WITH_YOUR_DENGUE.pdf", "page": 1}]},
         {"question": "What is the capital of France?", "expected": []},
+
+        {"question": "What are the warning signs of severe dengue?",
+         "expected": [{"source": "REPLACE_WITH_YOUR_DENGUE.pdf"}], "disease": "dengue"},
+        {"question": "What are the symptoms of malaria?",
+         "expected": [{"source": "REPLACE_WITH_YOUR_MALARIA.pdf"}], "disease": "malaria"},
+        {"question": "What joint symptoms does chikungunya cause?",
+         "expected": [{"source": "REPLACE_WITH_YOUR_CHIKUNGUNYA.pdf"}], "disease": "chikungunya"},
+        {"question": "How does Zika virus affect pregnancy?",
+         "expected": [{"source": "REPLACE_WITH_YOUR_ZIKA.pdf"}], "disease": "zika"},
     ]
     with open("rag_testset.json", "w", encoding="utf-8") as f:
         json.dump(template, f, indent=2)
     print("Wrote rag_testset.json — replace the examples with 20-50 real questions.")
+    print("Tag positives with \"disease\" (malaria/dengue/chikungunya/zika) to also get")
+    print("the disease-filter-impact report when you run `evaluate`.")
 
 
 if __name__ == "__main__":
@@ -147,6 +269,11 @@ if __name__ == "__main__":
     p_eval.add_argument("--testset", default="rag_testset.json")
     p_eval.add_argument("--thresholds", nargs="*", type=float)
     p_eval.add_argument("--with-coverage", action="store_true")
+    p_eval.add_argument(
+        "--disease-threshold", type=float, default=None,
+        help="Threshold used for the disease-filter-impact report "
+             "(default: retrieval.RELEVANCE_THRESHOLD, i.e. what production uses).",
+    )
     sub.add_parser("template")
     args = parser.parse_args()
     {"inspect": cmd_inspect, "evaluate": cmd_evaluate, "template": cmd_template}[args.cmd](args)
