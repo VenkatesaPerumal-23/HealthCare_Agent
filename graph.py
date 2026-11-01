@@ -882,6 +882,13 @@ def run_graph_turn(app, inputs: dict, thread_id: str) -> GraphState:
                     f"confidence={result.get('confidence')}",
         )
         langfuse_client.update_current_span(output={"answer": result.get("answer", "")})
+
+        try:
+            trace_id = langfuse_client.get_current_trace_id()
+            if trace_id:
+                result["langfuse_trace_url"] = langfuse_client.get_trace_url(trace_id=trace_id)
+        except Exception:
+            pass
     return result
 
 
@@ -935,5 +942,3 @@ def build_graph():
 
     # In-memory checkpointing retains graph state per thread while the process runs.
     return graph.compile(checkpointer=MemorySaver())
-
-

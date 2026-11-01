@@ -3,14 +3,6 @@ Streamlit UI for HealthGuard AI. No LLM, retrieval, or graph-node logic lives
 here — this file takes user input, calls the compiled graph, and renders the
 result (answer, sources, agent details, sidebar controls).
 
-This revision changes ONLY the presentation layer:
-- a small CSS pass for a calmer, more readable dark theme
-- "Agent details" rendered as colour-coded badges + metrics instead of raw JSON
-  (the raw JSON is still available, tucked into a nested expander)
-- an empty-state welcome with clickable example questions
-- the sidebar file list restored, grouped by disease inside a collapsed expander
-The graph call, the inputs dict, session state, and metadata construction are
-unchanged from the previous version.
 """
 import os
 
@@ -329,10 +321,11 @@ def main():
                     }
                     if result.get("retrieval_diagnostics"):
                         metadata["retrieval"] = result["retrieval_diagnostics"]
-                    if LANGFUSE_ENABLED and langfuse_client is not None:
-                        trace_url = langfuse_client.get_trace_url()
-                        if trace_url:
-                            metadata["langfuse_trace_url"] = trace_url
+                    # run_graph_turn captures this while the trace span is still
+                    # active; calling get_trace_url() out here (after the span has
+                    # closed) returns nothing, which is why the link was missing.
+                    if result.get("langfuse_trace_url"):
+                        metadata["langfuse_trace_url"] = result["langfuse_trace_url"]
                     if result.get("intent") == "symptom_check":
                         metadata.update({
                             "symptoms": result.get("symptoms", []),
