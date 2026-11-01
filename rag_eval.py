@@ -87,7 +87,6 @@ def cmd_inspect(args):
         # On-topic: edit to match your PDFs
         "How is dengue transmitted?",
         "What are the symptoms of malaria?",
-        "How can tuberculosis be prevented?",
         # Off-topic: these show what 'irrelevant' scores look like in YOUR store
         "What is the capital of France?",
         "How do I change a car tyre?",
@@ -119,7 +118,7 @@ def cmd_evaluate(args):
 
     print("-" * 78)
     print(f"{'threshold':>9} | {'Recall@K':>8} | {'Precision@K':>11} | {'MRR':>3} | "
-          f"{'avg kept':>8} | {'negatives rejected':>18}")
+          f"{'avg kept':>8} | {'negatives rejected':>18}")  #:> right-align it in a x-character-wide column
     print("-" * 78)
     for threshold in (args.thresholds or SWEEP):
         rows = []
@@ -198,7 +197,7 @@ def report_disease_filter_impact(testset: list, threshold: float, with_coverage:
             "leak_filtered": count_cross_disease_leakage(filtered_sources, disease, k),
             "fellback": filtered_diag.get("disease_filter_fellback", False),
         }
-        by_disease.setdefault(disease, []).append(row) ##############
+        by_disease.setdefault(disease, []).append(row)
 
     def avg(rows, path):
         keys = path.split(".")
@@ -219,7 +218,7 @@ def report_disease_filter_impact(testset: list, threshold: float, with_coverage:
               f"{avg(rows,'unfiltered.recall'):>7.2f} → {avg(rows,'filtered.recall'):>7.2f} | "
               f"{avg(rows,'unfiltered.precision'):>9.2f} → {avg(rows,'filtered.precision'):>9.2f} | "
               f"{avg(rows,'leak_unfiltered'):>7.1f} → {avg(rows,'leak_filtered'):>7.1f} | "
-              f"{fellback_count}/{len(rows):>7}")
+              f"{fellback_count}/{len(rows):>1}")
 
     fellback_total = sum(1 for r in all_rows if r["fellback"])
     print("-" * 96)
@@ -227,7 +226,7 @@ def report_disease_filter_impact(testset: list, threshold: float, with_coverage:
           f"{avg(all_rows,'unfiltered.recall'):>7.2f} → {avg(all_rows,'filtered.recall'):>7.2f} | "
           f"{avg(all_rows,'unfiltered.precision'):>9.2f} → {avg(all_rows,'filtered.precision'):>9.2f} | "
           f"{avg(all_rows,'leak_unfiltered'):>7.1f} → {avg(all_rows,'leak_filtered'):>7.1f} | "
-          f"{fellback_total}/{len(all_rows):>7}")
+          f"{fellback_total}/{len(all_rows):>1}")
 
     print("\nRead this as: recall should not drop filtered vs. unfiltered (the filter should")
     print("never hide the right answer), while leak/q should drop toward 0 (the filter should")
@@ -264,7 +263,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_inspect = sub.add_parser("inspect")
-    p_inspect.add_argument("--queries", nargs="*")
+    p_inspect.add_argument("--queries", nargs="*")      #--queries nargs-> "how is dengue transmitted?" "what is the capital of France?"
     p_eval = sub.add_parser("evaluate")
     p_eval.add_argument("--testset", default="rag_testset.json")
     p_eval.add_argument("--thresholds", nargs="*", type=float)

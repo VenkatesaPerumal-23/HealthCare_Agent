@@ -3,10 +3,10 @@
       "question": "How is dengue transmitted?",
       "expected": [
         {
-          "source": "dengue_guidelines.pdf",
-          "page": 1
+          "source": "dengue_guidelines.pdf"
         }
-      ]
+      ],
+      "disease": "dengue"
     },
   {
     "question": "What is the capital of France?",
