@@ -47,6 +47,16 @@ Open the local URL printed in the terminal (usually <http://localhost:8501>). In
 
 The first run may take longer while the sentence-transformer embedding model is downloaded. Keep the app running in the terminal; press `Ctrl+C` to stop it.
 
+## Run with LangGraph Studio
+
+After setting up the environment and `.env`, start the local LangGraph API server:
+
+```bash
+uv run langgraph dev
+```
+
+Open the Studio URL printed by the command (typically <https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024>). The graph uses Studio's checkpointer; the Streamlit app continues to use its own in-memory checkpointer. Studio requests that use local PDF retrieval need the existing `chroma_db/` and `knowledge-base/` data.
+
 ## RAG evaluation (optional)
 
 After indexing PDFs, inspect retrieval scores:

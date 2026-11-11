@@ -897,7 +897,7 @@ def run_graph_turn(app, inputs: dict, thread_id: str) -> GraphState:
 # ============================================================
 
 @st.cache_resource
-def build_graph():
+def build_graph(use_memory_checkpointer: bool = True):
     graph = StateGraph(GraphState)
 
     graph.add_node("supervisor", supervisor_node)
@@ -940,5 +940,9 @@ def build_graph():
     graph.add_edge("conversation_context", END)
     graph.add_edge("clarification", END)
 
-    # In-memory checkpointing retains graph state per thread while the process runs.
-    return graph.compile(checkpointer=MemorySaver())
+    # Streamlit keeps per-thread state locally; LangGraph Studio supplies its own checkpointer.
+    checkpointer = MemorySaver() if use_memory_checkpointer else None
+    return graph.compile(checkpointer=checkpointer)
+
+
+studio_graph = build_graph(use_memory_checkpointer=False)

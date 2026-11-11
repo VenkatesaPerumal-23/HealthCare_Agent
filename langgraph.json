@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "healthcare_agent": "./graph.py:studio_graph"
+  },
+  "env": ".env",
+  "python_version": "3.11"
+}
